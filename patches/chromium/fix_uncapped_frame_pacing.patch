@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nzalexgarciagil-ctrl <nzalexgarciagil@gmail.com>
+Date: Sat, 29 Aug 2026 00:00:00 +0000
+Subject: fix: bound uncapped compositor submissions
+
+The --disable-frame-rate-limit path previously bypassed Chromium's pending
+submit-frame throttle, allowing BackToBackBeginFrameSource to flood the main
+thread with zero-delay BeginFrame work. Keep the safe default queue depth at
+one, expose an optional renderer-side CustomMaxPendingFrames field-trial
+parameter, and apply the same bound to the debug invariant. The minimum stays
+at one so an invalid or disabled parameter cannot reintroduce the flood. This
+is the Chromium 152 port of the Electron-44 frame-pacing fix.
+
+diff --git a/cc/scheduler/scheduler_state_machine.cc b/cc/scheduler/scheduler_state_machine.cc
+index ce6e121..d86080d 100644
+--- a/cc/scheduler/scheduler_state_machine.cc
++++ b/cc/scheduler/scheduler_state_machine.cc
+@@ -7,7 +7,9 @@
+ #include <algorithm>
+ 
+ #include "base/check_op.h"
++#include "base/feature_list.h"
+ #include "base/format_macros.h"
++#include "base/metrics/field_trial_params.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "base/notreached.h"
+ #include "base/rand_util.h"
+@@ -30,7 +32,25 @@ namespace cc {
+ 
+ namespace {
+ // Surfaces and CompositorTimingHistory don't support more than 1 pending swap.
+-constexpr int kMaxPendingSubmitFrames = 1;
++constexpr int kMaxPendingSubmitFrames = 1;  // unchanged - safe default
++
++// Expose the frame-queue depth as a runtime-tunable feature parameter.
++// Feature parameters propagate to the renderer process automatically (field
++// trials), which is required because this scheduler runs in the renderer.
++// The optional higher-throughput mode uses:
++//   --enable-features=CustomMaxPendingFrames:count/2
++BASE_FEATURE(kCustomMaxPendingFrames,
++             "CustomMaxPendingFrames",
++             base::FEATURE_ENABLED_BY_DEFAULT);
++constexpr base::FeatureParam<int> kMaxPendingFramesCount{
++    &kCustomMaxPendingFrames, "count", kMaxPendingSubmitFrames};  // default 1
++
++// Read once and floor the value at one. Zero or negative values would disable
++// throttling and reintroduce the unbounded queue this patch prevents.
++int MaxPendingSubmitFrames() {
++  static const int value = std::max(1, kMaxPendingFramesCount.Get());
++  return value;
++}
+ 
+ constexpr float kFrameThrottlingSlackFactor = 0.9;
+ 
+@@ -1507,8 +1527,7 @@ bool SchedulerStateMachine::IsDrawThrottled() const {
+   if (base::FeatureList::IsEnabled(features::kNoCompositorFrameAcks)) {
+     return false;
+   }
+-  return pending_submit_frames_ >= kMaxPendingSubmitFrames &&
+-         !settings_.disable_frame_rate_limit;
++  return pending_submit_frames_ >= MaxPendingSubmitFrames();
+ }
+ 
+ void SchedulerStateMachine::SetVisible(bool visible) {
+@@ -1577,7 +1596,7 @@ void SchedulerStateMachine::DidSubmitCompositorFrame() {
+     // We should remove or change this once VRR support is implemented for
+     // Windows and other platforms potentially.
+     if (!settings_.disable_frame_rate_limit) {
+-      DCHECK_LT(pending_submit_frames_, kMaxPendingSubmitFrames);
++      DCHECK_LT(pending_submit_frames_, MaxPendingSubmitFrames());
+     }
+ 
+     pending_submit_frames_++;
