@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Uncapped WebSocket starvation qualification</title>
+  <style>
+    html, body { margin: 0; overflow: hidden; background: #111; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #hud {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      color: #0f0;
+      background: rgb(0 0 0 / 80%);
+      font: 14px monospace;
+      padding: 10px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="hud">warming up</div>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext('2d');
+    const hud = document.getElementById('hud');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    let active = false;
+    let activeStartedAt = 0;
+    let activeElapsed = 0;
+    let mouseDown = false;
+    let mouseX = canvas.width / 2;
+    let mouseY = canvas.height / 2;
+    let mouseEvents = 0;
+    let frames = 0;
+    let lastFrameTimestamp = 0;
+    const websocketLatencies = [];
+    const workerLatencies = [];
+    const frameTimes = [];
+
+    function record(list, value) {
+      if (active && Number.isFinite(value)) list.push(Math.max(0, value));
+    }
+
+    function draw() {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.strokeStyle = mouseDown ? '#f33' : '#0f0';
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(mouseX - 24, mouseY);
+      context.lineTo(mouseX + 24, mouseY);
+      context.moveTo(mouseX, mouseY - 24);
+      context.lineTo(mouseX, mouseY + 24);
+      context.stroke();
+      if (mouseDown) {
+        for (let index = 0; index < 8; index++) {
+          context.fillStyle = `hsl(${Math.random() * 60}, 100%, 50%)`;
+          context.fillRect(
+            mouseX + Math.random() * 70 - 35,
+            mouseY + Math.random() * 70 - 35,
+            4,
+            4
+          );
+        }
+      }
+    }
+
+    document.addEventListener('mousedown', (event) => {
+      mouseDown = true;
+      mouseX = event.clientX;
+      mouseY = event.clientY;
+      draw();
+    });
+    document.addEventListener('mouseup', () => { mouseDown = false; });
+    document.addEventListener('mousemove', (event) => {
+      mouseX = event.clientX;
+      mouseY = event.clientY;
+      mouseEvents++;
+      draw();
+    });
+
+    function animationFrame(timestamp) {
+      if (active) {
+        frames++;
+        if (lastFrameTimestamp > 0) frameTimes.push(timestamp - lastFrameTimestamp);
+        lastFrameTimestamp = timestamp;
+        draw();
+      }
+      requestAnimationFrame(animationFrame);
+    }
+    requestAnimationFrame(animationFrame);
+
+    const websocket = new WebSocket(`ws://${location.host}/ws`);
+    websocket.addEventListener('message', (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        record(websocketLatencies, Date.now() - message.sentAt);
+      } catch (_error) {
+        // Ignore malformed test traffic; the qualification server only sends JSON.
+      }
+    });
+
+    const workerSource = `
+      setInterval(() => postMessage(performance.timeOrigin + performance.now()), 16);
+    `;
+    const worker = new Worker(URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' })));
+    worker.addEventListener('message', (event) => {
+      record(workerLatencies, performance.timeOrigin + performance.now() - event.data);
+    });
+
+    function percentile(sorted, fraction) {
+      if (sorted.length === 0) return 0;
+      return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+    }
+
+    function summarize(values) {
+      const sorted = [...values].sort((left, right) => left - right);
+      const over50 = values.filter((value) => value > 50).length;
+      return {
+        total: values.length,
+        p50: percentile(sorted, 0.50),
+        p95: percentile(sorted, 0.95),
+        p99: percentile(sorted, 0.99),
+        max: sorted.at(-1) || 0,
+        over50,
+        over50Percent: values.length === 0 ? 0 : over50 / values.length * 100
+      };
+    }
+
+    window.resetStressMetrics = () => {
+      websocketLatencies.length = 0;
+      workerLatencies.length = 0;
+      frameTimes.length = 0;
+      active = true;
+      activeStartedAt = performance.now();
+      activeElapsed = 0;
+      mouseEvents = 0;
+      frames = 0;
+      lastFrameTimestamp = 0;
+      hud.textContent = 'stress active';
+    };
+
+    window.setStressActive = (nextActive) => {
+      if (active && !nextActive) activeElapsed = performance.now() - activeStartedAt;
+      active = Boolean(nextActive);
+    };
+
+    window.getStressMetrics = () => JSON.stringify({
+      websocket: summarize(websocketLatencies),
+      worker: summarize(workerLatencies),
+      frameTimeP95: percentile([...frameTimes].sort((left, right) => left - right), 0.95),
+      fps: activeElapsed > 0 ? frames / (activeElapsed / 1000) : 0,
+      frames,
+      mouseEvents
+    });
+
+    setInterval(() => {
+      hud.textContent = `WS p99 ${summarize(websocketLatencies).p99.toFixed(1)}ms · ` +
+        `Worker p99 ${summarize(workerLatencies).p99.toFixed(1)}ms · ` +
+        `Frames ${frames}`;
+    }, 250);
+  </script>
+</body>
+</html>

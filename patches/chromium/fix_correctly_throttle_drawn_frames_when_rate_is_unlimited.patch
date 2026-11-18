@@ -5,10 +5,10 @@ Subject: fix: correctly throttle drawn frames when rate is unlimited
 
 
 diff --git a/cc/scheduler/scheduler_state_machine.cc b/cc/scheduler/scheduler_state_machine.cc
-index ae87756c7fb14871c7d28be1238a9c7700c75dfb..c70181b475a8431cf689a18d2fb11ba90957e2ee 100644
+index ce6e121c9b4bc07a98022cd482f4cfb76c5c2c68..16179ba98f4cccaf45d1a4e1c08d020a43339445 100644
 --- a/cc/scheduler/scheduler_state_machine.cc
 +++ b/cc/scheduler/scheduler_state_machine.cc
-@@ -1465,8 +1465,7 @@ bool SchedulerStateMachine::IsDrawThrottled() const {
+@@ -1507,8 +1507,7 @@ bool SchedulerStateMachine::IsDrawThrottled() const {
    if (base::FeatureList::IsEnabled(features::kNoCompositorFrameAcks)) {
      return false;
    }
