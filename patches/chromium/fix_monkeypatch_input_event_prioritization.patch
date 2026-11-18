@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: thegu5 <58223632+thegu5@users.noreply.github.com>
+Date: Sat, 29 Mar 2025 21:41:45 -0400
+Subject: fix: monkeypatch input event prioritization
+
+This fixes the bug commonly referred to as 'aim freeze' - when fps
+is uncapped, dragging mouse0 makes the main thread ignore IPC messages
+(websockets, workers) for extended periods of time.
+
+Input prioritization is only disabled when --disable-frame-rate-limit is
+set, so renderers with a capped frame rate keep Chromium's default input
+scheduling.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+
+diff --git a/third_party/blink/renderer/platform/scheduler/main_thread/main_thread_scheduler_impl.cc b/third_party/blink/renderer/platform/scheduler/main_thread/main_thread_scheduler_impl.cc
+index add2f3ce6559bb2dc6d369a2d95e15905fc58fb9..b00b723fa2b2314012f75b67f4072c217a67297c 100644
+--- a/third_party/blink/renderer/platform/scheduler/main_thread/main_thread_scheduler_impl.cc
++++ b/third_party/blink/renderer/platform/scheduler/main_thread/main_thread_scheduler_impl.cc
+@@ -11,6 +11,7 @@
+ #include <utility>
+ 
+ #include "base/check_op.h"
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+@@ -94,6 +95,15 @@ BASE_FEATURE(kBusyLoopAggressiveAfterCommittedLoad,
+ 
+ namespace {
+ constexpr base::TimeDelta kBusyLoopAggressiveTime = base::Milliseconds(500);
++
++// Same value as viz::switches::kDisableFrameRateLimit, which the browser
++// forwards to renderer processes.
++bool IsFrameRateLimitDisabled() {
++  static const bool disabled =
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "disable-frame-rate-limit");
++  return disabled;
++}
+ }
+ 
+ // When scrolling and the main thread is not expected to be blocking, decrease
+@@ -1260,6 +1270,11 @@ void MainThreadSchedulerImpl::PerformMicrotaskCheckpoint() {
+ // static
+ bool MainThreadSchedulerImpl::ShouldPrioritizeInputEvent(
+     const blink::WebInputEvent& web_input_event) {
++  // With an uncapped frame rate, entering input priority lets continuous mouse
++  // input starve IPC work (WebSocket and worker messages) on the main thread.
++  if (IsFrameRateLimitDisabled()) {
++    return false;
++  }
+   // We regard MouseMove events with the left mouse button down as a signal
+   // that the user is doing something requiring a smooth frame rate.
+   if ((web_input_event.GetType() == blink::WebInputEvent::Type::kMouseDown ||
+

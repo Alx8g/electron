@@ -29,13 +29,5 @@ over 50 ms must be zero, and all three activity counters must be non-zero. The
 optional `WS_STARVATION_MAX_OVER_50` environment variable exists only for a
 documented noisy-host exception; normal qualification runs must leave it unset.
 
-For the optional frame-throughput comparison, repeat the same run with the
-feature parameter supplied before the script path:
-
-```sh
-path/to/electron --enable-features=CustomMaxPendingFrames:count/2 \
-  script/uncapped-websocket-starvation/cdp-test.js 8085 COUNT2 12000
-```
-
 Record actual output from each binary. Do not treat a successful build or a
 source patch as runtime qualification evidence.
